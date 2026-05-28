@@ -1,7 +1,6 @@
 package com.example.loanaccount.logging;
 
-import com.example.loanaccount.resilience.CircuitBreaker;
-import com.example.loanaccount.resilience.CircuitBreakerState;
+import com.example.loanaccount.resilience.LoanCircuitBreaker;
 
 import java.util.HashMap;
 import java.util.Locale;
@@ -9,9 +8,9 @@ import java.util.Map;
 
 public class LoggingStrategyResolver {
     private final Map<String, LogStrategy> strategies = new HashMap<>();
-    private CircuitBreaker circuitBreaker;
+    private LoanCircuitBreaker circuitBreaker;
 
-    public LoggingStrategyResolver withCircuitBreaker(CircuitBreaker circuitBreaker) {
+    public LoggingStrategyResolver withCircuitBreaker(LoanCircuitBreaker circuitBreaker) {
         this.circuitBreaker = circuitBreaker;
         return this;
     }
@@ -22,7 +21,8 @@ public class LoggingStrategyResolver {
     }
 
     public LogStrategy resolve(String name) {
-        if (circuitBreaker != null && circuitBreaker.state() == CircuitBreakerState.OPEN) {
+        // Business rule: when the loan provider breaker is OPEN, all APIs write audit logs to filesystem.
+        if (circuitBreaker != null && circuitBreaker.isOpen()) {
             return strategies.get("file");
         }
 

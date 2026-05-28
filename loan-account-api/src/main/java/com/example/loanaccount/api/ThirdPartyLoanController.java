@@ -1,25 +1,16 @@
 package com.example.loanaccount.api;
 
 import com.example.loanaccount.util.HttpExchangeUtils;
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpHandler;
+import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
 
-import java.io.IOException;
-import java.util.Map;
-
-public class ThirdPartyLoanHandler implements HttpHandler {
-    @Override
-    public void handle(HttpExchange exchange) throws IOException {
-        if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
-            HttpExchangeUtils.sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
-            return;
-        }
-
-        Map<String, String> query = HttpExchangeUtils.queryParams(exchange.getRequestURI().getRawQuery());
-        String customerId = query.getOrDefault("customerId", "C001");
-        String response = loanResponseFor(customerId);
-
-        HttpExchangeUtils.sendJson(exchange, 200, response);
+@RestController
+public class ThirdPartyLoanController {
+    @GetMapping(value = "/third-party/loan", produces = MediaType.APPLICATION_JSON_VALUE)
+    public String loan(@RequestParam(defaultValue = "C001") String customerId) {
+        return loanResponseFor(customerId);
     }
 
     private String loanResponseFor(String customerId) {

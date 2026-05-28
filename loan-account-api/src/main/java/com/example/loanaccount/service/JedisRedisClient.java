@@ -1,14 +1,25 @@
 package com.example.loanaccount.service;
 
+import com.example.loanaccount.config.AppProperties;
+import org.springframework.stereotype.Component;
+import redis.clients.jedis.DefaultJedisClientConfig;
+import redis.clients.jedis.HostAndPort;
+import redis.clients.jedis.JedisClientConfig;
 import redis.clients.jedis.JedisPooled;
 
 import java.util.Optional;
 
+@Component
 public class JedisRedisClient implements RedisClient {
     private final JedisPooled jedis;
 
-    public JedisRedisClient(String host, int port, int timeoutMillis) {
-        this.jedis = new JedisPooled(host, port, timeoutMillis);
+    public JedisRedisClient(AppProperties properties) {
+        AppProperties.Redis redis = properties.redis();
+        JedisClientConfig clientConfig = DefaultJedisClientConfig.builder()
+                .connectionTimeoutMillis(redis.timeoutMillis())
+                .socketTimeoutMillis(redis.timeoutMillis())
+                .build();
+        this.jedis = new JedisPooled(new HostAndPort(redis.host(), redis.port()), clientConfig);
     }
 
     @Override

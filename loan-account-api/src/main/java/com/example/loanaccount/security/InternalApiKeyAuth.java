@@ -1,18 +1,21 @@
 package com.example.loanaccount.security;
 
+import com.example.loanaccount.config.AppProperties;
 import com.example.loanaccount.logging.StructuredLogger;
-import com.sun.net.httpserver.HttpExchange;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.stereotype.Component;
 
 import java.util.Map;
 
+@Component
 public class InternalApiKeyAuth {
     private final String internalApiKey;
 
-    public InternalApiKeyAuth(String internalApiKey) {
-        this.internalApiKey = internalApiKey == null ? "" : internalApiKey.trim();
+    public InternalApiKeyAuth(AppProperties properties) {
+        this.internalApiKey = properties.internal().apiKey() == null ? "" : properties.internal().apiKey().trim();
         if (this.internalApiKey.isBlank()) {
             StructuredLogger.warn("internal_api_key_blank", Map.of(
-                    "message", "Internal endpoints are open because internal.api.key is blank"
+                    "message", "Internal endpoints are open because app.internal.api-key is blank"
             ));
         }
     }
@@ -21,11 +24,11 @@ public class InternalApiKeyAuth {
         return !internalApiKey.isBlank();
     }
 
-    public boolean isAuthorized(HttpExchange exchange) {
+    public boolean isAuthorized(HttpServletRequest request) {
         if (!isConfigured()) {
             return true;
         }
-        String providedKey = exchange.getRequestHeaders().getFirst("X-Internal-Key");
+        String providedKey = request.getHeader("X-Internal-Key");
         return internalApiKey.equals(providedKey);
     }
 }

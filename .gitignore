@@ -1,2 +1,5 @@
 .idea/
 out/
+target/
+logs/
+dependency-reduced-pom.xml

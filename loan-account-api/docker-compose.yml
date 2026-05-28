@@ -14,11 +14,11 @@ services:
     depends_on:
       - redis
     environment:
-      REDIS_HOST: redis
-      REDIS_PORT: "6379"
-      INTERNAL_API_KEY: dev-internal-key
-      LOGGING_DEFAULTSTRATEGY: db
-      LOGGING_FILE_DIRECTORY: /app/logs
+      APP_REDIS_HOST: redis
+      APP_REDIS_PORT: "6379"
+      APP_INTERNAL_API_KEY: dev-internal-key
+      APP_LOGGING_DEFAULT_STRATEGY: db
+      APP_LOGGING_FILE_DIRECTORY: /app/logs
     volumes:
       - ./logs:/app/logs
 
