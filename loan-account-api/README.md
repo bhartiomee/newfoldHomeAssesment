@@ -41,7 +41,9 @@ Spring Boot + Embedded Tomcat
         |
         +-- /health
         +-- /logs/db
+        +-- /logs/db/test-entry
         +-- /circuit-breaker/status
+        +-- /circuit-breaker/open
         +-- /circuit-breaker/reset
 
 AuditLoggingService
@@ -160,7 +162,55 @@ Expected response includes:
 }
 ```
 
-### 4. Input Validation
+### 4. Add Account Data To Redis
+
+Use this to add more account data, then fetch it through `GET /account-details`.
+
+```bash
+curl -X POST "http://127.0.0.1:8080/account-details" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "accountId": "A2001",
+    "holderName": "Test User",
+    "balance": 45678.90,
+    "currency": "INR",
+    "status": "ACTIVE"
+  }'
+```
+
+Fetch the new account:
+
+```bash
+curl -H "X-Request-Id: e2e-account-new" \
+  "http://127.0.0.1:8080/account-details?accountId=A2001"
+```
+
+### 5. Add Mock Loan Provider Data To Redis
+
+Use this to add more third-party loan-provider data. The `/loan` API calls the mock provider, and the mock provider first checks Redis key `third-party:loan:{customerId}`.
+
+```bash
+curl -X POST "http://127.0.0.1:8080/third-party/loan-data" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "customerId": "C9001",
+    "eligible": true,
+    "decision": "APPROVED",
+    "approvedLimit": 990000,
+    "interestRate": 8.75,
+    "tenureMonths": 84,
+    "currency": "INR"
+  }'
+```
+
+Fetch the newly added mock provider data through the real loan API:
+
+```bash
+curl -H "X-Request-Id: e2e-loan-new" \
+  "http://127.0.0.1:8080/loan?customerId=C9001"
+```
+
+### 6. Input Validation
 
 ```bash
 curl -i "http://127.0.0.1:8080/loan?customerId=bad-id"
@@ -185,7 +235,7 @@ or:
 {"error":"Invalid accountId format"}
 ```
 
-### 5. DB Audit Logs
+### 7. DB Audit Logs
 
 DB logs are protected by `X-Internal-Key`.
 
@@ -217,7 +267,22 @@ Verify:
 - loan logs include `retryCount`
 - loan logs include `cacheHit`
 
-### 6. Filesystem Audit Logs
+You can also write a synthetic audit entry directly into the in-memory audit DB for testing:
+
+```bash
+curl -X POST \
+  -H "X-Internal-Key: dev-internal-key" \
+  "http://127.0.0.1:8080/logs/db/test-entry?customerId=C7777"
+```
+
+Then fetch DB logs again:
+
+```bash
+curl -H "X-Internal-Key: dev-internal-key" \
+  "http://127.0.0.1:8080/logs/db"
+```
+
+### 8. Filesystem Audit Logs
 
 Filesystem logs are mounted from the container to the local `logs/` directory.
 
@@ -232,7 +297,16 @@ ls logs
 tail -n 20 logs/api-requests-YYYY-MM-DD.log
 ```
 
-### 7. Circuit Breaker Status
+### 9. Database Used
+
+This project uses two storage mechanisms:
+
+- **Redis**: real Redis container from Docker Compose. It stores account data and loan-response cache entries.
+- **Audit DB**: bounded in-memory audit log database implemented by `InMemoryLogDatabase`. It is intentionally lightweight for this assignment and resets when the app restarts. The API exposes it through protected endpoint `GET /logs/db`.
+
+There is no external SQL database in this implementation. For a production system, the `DatabaseLogStrategy` can be replaced with PostgreSQL/MySQL using the same logging strategy interface.
+
+### 10. Circuit Breaker Status
 
 ```bash
 curl "http://127.0.0.1:8080/circuit-breaker/status"
@@ -248,7 +322,46 @@ Expected:
 }
 ```
 
-### 8. Circuit Breaker Reset
+### 11. Circuit Breaker Open/Close Test
+
+Use this flow to prove that when the circuit breaker is `OPEN`, audit logs are forced to filesystem.
+
+Open the circuit breaker manually:
+
+```bash
+curl -X POST \
+  -H "X-Internal-Key: dev-internal-key" \
+  "http://127.0.0.1:8080/circuit-breaker/open"
+```
+
+Confirm state is `OPEN`:
+
+```bash
+curl "http://127.0.0.1:8080/circuit-breaker/status"
+curl "http://127.0.0.1:8080/health"
+```
+
+Call account API while the breaker is open:
+
+```bash
+curl -H "X-Request-Id: cb-open-account-1" \
+  "http://127.0.0.1:8080/account-details?accountId=A1001"
+```
+
+Verify the log went to filesystem:
+
+```bash
+tail -n 20 logs/api-requests-2026-05-28.log
+```
+
+Look for:
+
+```text
+"requestId":"cb-open-account-1"
+"loggingStrategy":"file"
+```
+
+Reset the circuit breaker back to `CLOSED`:
 
 ```bash
 curl -X POST \
@@ -266,7 +379,28 @@ Expected:
 }
 ```
 
-### 9. Verify `logTo` Is Ignored
+Call account API again:
+
+```bash
+curl -H "X-Request-Id: cb-closed-account-1" \
+  "http://127.0.0.1:8080/account-details?accountId=A1001"
+```
+
+Verify that normal DB logging resumed:
+
+```bash
+curl -H "X-Internal-Key: dev-internal-key" \
+  "http://127.0.0.1:8080/logs/db"
+```
+
+Look for:
+
+```text
+"requestId":"cb-closed-account-1"
+"loggingStrategy":"db"
+```
+
+### 12. Verify `logTo` Is Ignored
 
 The API accepts the param but does not use it.
 

@@ -2,14 +2,18 @@ package com.example.loanaccount.api;
 
 import com.example.loanaccount.logging.InMemoryLogDatabase;
 import com.example.loanaccount.logging.StructuredLogger;
+import com.example.loanaccount.model.ApiResponse;
+import com.example.loanaccount.model.RequestSnapshot;
 import com.example.loanaccount.resilience.LoanCircuitBreaker;
 import com.example.loanaccount.security.InternalApiKeyAuth;
+import com.example.loanaccount.logging.AuditLogEntry;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Clock;
@@ -95,6 +99,52 @@ public class InternalController {
                     "state", circuitBreaker.state()
             ));
             return json(200, "{\"circuitBreaker\":\"" + circuitBreaker.name() + "\",\"state\":\"CLOSED\",\"action\":\"reset\"}");
+        }, internalExecutor);
+    }
+
+    @PostMapping(value = "/circuit-breaker/open", produces = MediaType.APPLICATION_JSON_VALUE)
+    public CompletableFuture<ResponseEntity<String>> openCircuitBreaker(HttpServletRequest request) {
+        return CompletableFuture.supplyAsync(() -> {
+            if (!internalApiKeyAuth.isAuthorized(request)) {
+                return json(401, "{\"error\":\"Unauthorized\"}");
+            }
+
+            circuitBreaker.open();
+            StructuredLogger.warn("circuit_breaker_manual_open", Map.of(
+                    "circuitBreaker", circuitBreaker.name(),
+                    "state", circuitBreaker.state()
+            ));
+            return json(200, "{\"circuitBreaker\":\"" + circuitBreaker.name() + "\",\"state\":\"OPEN\",\"action\":\"open\"}");
+        }, internalExecutor);
+    }
+
+    @PostMapping(value = "/logs/db/test-entry", produces = MediaType.APPLICATION_JSON_VALUE)
+    public CompletableFuture<ResponseEntity<String>> insertDbLogTestEntry(
+            HttpServletRequest request,
+            @RequestParam(defaultValue = "TEST1") String customerId
+    ) {
+        return CompletableFuture.supplyAsync(() -> {
+            if (!internalApiKeyAuth.isAuthorized(request)) {
+                return json(401, "{\"error\":\"Unauthorized\"}");
+            }
+
+            AuditLogEntry saved = logDatabase.insert(new AuditLogEntry(
+                    0,
+                    "manual-db-log-" + Instant.now(clock).toEpochMilli(),
+                    "manual-test",
+                    "db",
+                    new RequestSnapshot(
+                            "manual-db-log",
+                            "POST",
+                            "/logs/db/test-entry",
+                            Map.of("customerId", customerId),
+                            Map.of("source", "manual-test")
+                    ),
+                    new ApiResponse(200, "{\"message\":\"Manual DB audit log entry\"}"),
+                    Instant.now(clock)
+            ));
+
+            return json(201, "{\"message\":\"Audit log entry written to in-memory DB\",\"entry\":" + saved.toJson() + "}");
         }, internalExecutor);
     }
 

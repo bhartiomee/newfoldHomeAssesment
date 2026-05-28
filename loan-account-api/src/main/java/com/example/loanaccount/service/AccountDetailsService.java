@@ -16,4 +16,8 @@ public class AccountDetailsService {
                 .orElse("{\"error\":\"No account found for accountId "
                         + HttpExchangeUtils.escapeJson(accountId) + "\"}");
     }
+
+    public void saveAccountDetails(String accountId, String accountJson) {
+        redisClient.set("account:" + accountId, accountJson);
+    }
 }

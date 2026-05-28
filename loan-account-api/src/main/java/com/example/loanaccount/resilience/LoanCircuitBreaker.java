@@ -45,6 +45,10 @@ public class LoanCircuitBreaker {
         circuitBreaker.reset();
     }
 
+    public void open() {
+        circuitBreaker.transitionToOpenState();
+    }
+
     public String name() {
         return circuitBreaker.getName();
     }
