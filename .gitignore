@@ -2,4 +2,5 @@
 out/
 target/
 logs/
+build/
 dependency-reduced-pom.xml

@@ -5,143 +5,325 @@ Spring Boot banking-style API for:
 - `GET /loan`
 - `GET /account-details`
 
-It includes Redis-backed account reads, Redis caching for third-party loan responses, audit logging with interchangeable strategies, Resilience4j circuit breaker protection, internal endpoint auth, bulkhead pools, Docker, and health/status endpoints.
+The service demonstrates a production-oriented implementation of interchangeable audit logging, Redis reads/cache, Resilience4j circuit breaker protection, API-key protected internal endpoints, Dockerized runtime, and end-to-end testability.
 
-## Architecture
+## Code Architecture
 
 ```text
 Client
   |
   v
-Spring Boot + Tomcat
+Spring Boot + Embedded Tomcat
   |
-  +--> LoanController -> loan-pool
-  |      |
-  |      +--> validate customerId
-  |      +--> Redis cache lookup: loan:customer:{customerId}
-  |      +--> retry timeout/connect failures
-  |      +--> Resilience4j CircuitBreaker: loan-third-party
-  |      +--> mock third-party loan provider
-  |      +--> Redis cache write with TTL
-  |      +--> AuditLoggingService
+  +-- LoanController (/loan)
+  |     |
+  |     +-- validates customerId
+  |     +-- dispatches work to loan-pool
+  |     +-- LoanService
+  |           |
+  |           +-- Redis cache lookup: loan:customer:{customerId}
+  |           +-- retry timeout/connect failures with exponential backoff
+  |           +-- Resilience4j CircuitBreaker: loan-third-party
+  |           +-- third-party loan client call
+  |           +-- Redis cache write with TTL
+  |           +-- AuditLoggingService
   |
-  +--> AccountDetailsController -> account-pool
-  |      |
-  |      +--> validate accountId
-  |      +--> Redis lookup: account:{accountId}
-  |      +--> AuditLoggingService
+  +-- AccountDetailsController (/account-details)
+  |     |
+  |     +-- validates accountId
+  |     +-- dispatches work to account-pool
+  |     +-- AccountDetailsService
+  |           |
+  |           +-- Redis lookup: account:{accountId}
+  |           +-- AuditLoggingService
   |
-  +--> InternalController -> internal-pool
-         |
-         +--> /logs/db
-         +--> /health
-         +--> /circuit-breaker/status
-         +--> /circuit-breaker/reset
+  +-- InternalController
+        |
+        +-- /health
+        +-- /logs/db
+        +-- /circuit-breaker/status
+        +-- /circuit-breaker/reset
 
 AuditLoggingService
   |
-  +--> LoggingStrategyResolver
+  +-- LoggingStrategyResolver
         |
-        +--> if circuit breaker OPEN: force filesystem logging
-        +--> otherwise: configured app.logging.default-strategy
+        +-- if circuit breaker OPEN: force filesystem logging
+        +-- otherwise: app.logging.default-strategy
               |
-              +--> FileSystemLogStrategy
-              +--> DatabaseLogStrategy
+              +-- DatabaseLogStrategy
+              +-- FileSystemLogStrategy
 ```
 
-## Run With Docker
+Important packages:
+
+```text
+api/          Spring controllers
+config/       typed Spring configuration and beans
+logging/      audit log model, strategies, resolver, structured logger
+resilience/   Resilience4j CircuitBreaker wrapper
+security/     internal API-key auth
+service/      loan, account, Redis, seeding logic
+util/         validation, PII masking, request snapshot helpers
+```
+
+## Run In Docker
+
+Prerequisites:
+
+- Docker runtime running
+- Docker Compose available
+
+From the project directory:
 
 ```bash
 cd "/Users/omeebharti/Documents/New project/loan-account-api"
+docker compose down
 docker compose up -d --build
 ```
 
-Docker starts:
+Check containers:
 
-- `loan-account-api` on `localhost:8080`
-- Redis on `localhost:6379`
+```bash
+docker compose ps
+```
 
-Internal API key in Docker Compose:
+Expected services:
+
+```text
+loan-account-api
+redis
+```
+
+The app runs at:
+
+```text
+http://localhost:8080
+```
+
+Docker Compose configures the internal API key as:
 
 ```text
 dev-internal-key
 ```
 
-## Run Locally
+## End-To-End Testing In Docker
 
-Requires Maven and Redis running locally.
+Run these commands after `docker compose up -d --build`.
 
-```bash
-cd "/Users/omeebharti/Documents/New project/loan-account-api"
-./run.sh
-```
-
-## API Examples
-
-`logTo` query param is ignored even if sent. Logging destination comes from config, unless the circuit breaker is `OPEN`, in which case audit logs are forced to filesystem.
+### 1. Health Checks
 
 ```bash
-curl -H "X-Request-Id: req-loan-1" "http://localhost:8080/loan?customerId=C001"
-curl -H "X-Request-Id: req-account-1" "http://localhost:8080/account-details?accountId=A1001"
+curl "http://127.0.0.1:8080/health"
+curl "http://127.0.0.1:8080/actuator/health"
 ```
 
-Validation failure:
+Expected:
+
+```json
+{"status":"UP"}
+```
+
+The custom `/health` endpoint also shows circuit breaker state, DB audit log size, and uptime.
+
+### 2. Loan API
 
 ```bash
-curl -i "http://localhost:8080/loan?customerId=bad-id"
-curl -i "http://localhost:8080/account-details?accountId=bad-id"
+curl -H "X-Request-Id: e2e-loan-1" \
+  "http://127.0.0.1:8080/loan?customerId=C001"
 ```
 
-DB audit logs require `X-Internal-Key`:
+Expected response includes:
+
+```json
+{
+  "provider": "mock-loan-provider",
+  "customerId": "C001",
+  "decision": "APPROVED"
+}
+```
+
+### 3. Account Details API
 
 ```bash
-curl -H "X-Internal-Key: dev-internal-key" "http://localhost:8080/logs/db"
+curl -H "X-Request-Id: e2e-account-1" \
+  "http://127.0.0.1:8080/account-details?accountId=A1001"
 ```
+
+Expected response includes:
+
+```json
+{
+  "accountId": "A1001",
+  "holderName": "Omee Bharti",
+  "status": "ACTIVE"
+}
+```
+
+### 4. Input Validation
+
+```bash
+curl -i "http://127.0.0.1:8080/loan?customerId=bad-id"
+curl -i "http://127.0.0.1:8080/account-details?accountId=bad-id"
+```
+
+Expected status:
+
+```text
+400
+```
+
+Expected body:
+
+```json
+{"error":"Invalid customerId format"}
+```
+
+or:
+
+```json
+{"error":"Invalid accountId format"}
+```
+
+### 5. DB Audit Logs
+
+DB logs are protected by `X-Internal-Key`.
 
 Without key:
 
 ```bash
-curl -i "http://localhost:8080/logs/db"
+curl -i "http://127.0.0.1:8080/logs/db"
 ```
 
-Filesystem logs:
+Expected:
+
+```text
+401 Unauthorized
+```
+
+With key:
+
+```bash
+curl -H "X-Internal-Key: dev-internal-key" \
+  "http://127.0.0.1:8080/logs/db"
+```
+
+Verify:
+
+- request IDs are present
+- `customerId` is masked like `C***1`
+- `accountId` is masked like `A***1`
+- `balance` is masked as `"[MASKED]"`
+- loan logs include `retryCount`
+- loan logs include `cacheHit`
+
+### 6. Filesystem Audit Logs
+
+Filesystem logs are mounted from the container to the local `logs/` directory.
 
 ```bash
 tail -n 20 logs/api-requests-2026-05-28.log
 ```
 
-Health:
+If the date changed, list the log files:
 
 ```bash
-curl "http://localhost:8080/health"
-curl "http://localhost:8080/actuator/health"
+ls logs
+tail -n 20 logs/api-requests-YYYY-MM-DD.log
 ```
 
-Circuit breaker status:
+### 7. Circuit Breaker Status
 
 ```bash
-curl "http://localhost:8080/circuit-breaker/status"
+curl "http://127.0.0.1:8080/circuit-breaker/status"
 ```
 
-Manual circuit breaker reset:
+Expected:
+
+```json
+{
+  "circuitBreaker": "loan-third-party",
+  "state": "CLOSED",
+  "failedCalls": 0
+}
+```
+
+### 8. Circuit Breaker Reset
 
 ```bash
-curl -X POST -H "X-Internal-Key: dev-internal-key" "http://localhost:8080/circuit-breaker/reset"
+curl -X POST \
+  -H "X-Internal-Key: dev-internal-key" \
+  "http://127.0.0.1:8080/circuit-breaker/reset"
+```
+
+Expected:
+
+```json
+{
+  "circuitBreaker": "loan-third-party",
+  "state": "CLOSED",
+  "action": "reset"
+}
+```
+
+### 9. Verify `logTo` Is Ignored
+
+The API accepts the param but does not use it.
+
+```bash
+curl "http://127.0.0.1:8080/loan?customerId=C002&logTo=file"
+curl -H "X-Internal-Key: dev-internal-key" "http://127.0.0.1:8080/logs/db"
+```
+
+The logging destination still follows config unless the circuit breaker is `OPEN`.
+
+## Load Testing
+
+Install ApacheBench if needed:
+
+```bash
+brew install httpd
+```
+
+Account API load test:
+
+```bash
+/opt/homebrew/opt/httpd/bin/ab -n 1000 -c 50 \
+  "http://127.0.0.1:8080/account-details?accountId=A1001"
+```
+
+Loan API load test:
+
+```bash
+/opt/homebrew/opt/httpd/bin/ab -n 500 -c 25 \
+  "http://127.0.0.1:8080/loan?customerId=C001"
+```
+
+After load testing, verify health and logs:
+
+```bash
+curl "http://127.0.0.1:8080/health"
+curl -H "X-Internal-Key: dev-internal-key" "http://127.0.0.1:8080/logs/db"
+tail -n 20 logs/api-requests-2026-05-28.log
 ```
 
 ## Configuration
 
 Configuration is read from `application.properties`. Docker Compose sets environment variables using the `APP_` prefix.
 
-Examples:
+Important properties:
 
 ```text
 app.logging.default-strategy=db
+app.logging.file-directory=logs
+app.logging.db.max-entries=10000
 app.internal.api-key=dev-internal-key
 app.loan.http.max-retries=2
 app.loan.cache-ttl-seconds=300
 app.circuit-breaker.loan.failure-threshold=3
+app.circuit-breaker.loan.open-duration-millis=30000
 app.redis.host=localhost
+app.redis.port=6379
 ```
 
 Docker examples:
@@ -153,17 +335,35 @@ APP_LOGGING_DEFAULT_STRATEGY=db
 APP_LOGGING_FILE_DIRECTORY=/app/logs
 ```
 
-## Production-Oriented Behaviors
+## Non-Functional Requirements Implemented
 
-- Spring Boot controllers expose the API surface.
-- `X-Request-Id` correlation ID is accepted or generated.
-- `customerId` and `accountId` must match `^[A-Z0-9]{1,20}$`.
-- Audit query values for `customerId` and `accountId` are masked.
-- Audit response `balance` values are masked with a regex before writing logs.
-- Third-party loan calls retry only `ConnectException` and `HttpTimeoutException`.
-- HTTP 4xx from third-party is never retried.
-- Resilience4j circuit breaker protects the third-party loan call.
-- Circuit breaker `OPEN` forces filesystem audit logging for all APIs.
-- `/logs/db` and circuit breaker reset are protected by `X-Internal-Key`.
-- Separate bounded pools isolate loan, account, and internal work.
-- Spring Boot Actuator is available at `/actuator/health`.
+- **Spring Boot foundation**: chosen for standard production structure, dependency injection, embedded server management, configuration binding, and Actuator support.
+- **Request correlation**: `X-Request-Id` is accepted or generated so request/response audit logs can be traced across DB and filesystem.
+- **Input validation**: `customerId` and `accountId` must match `^[A-Z0-9]{1,20}$` to prevent malformed downstream calls and noisy logs.
+- **PII masking**: audit logs mask `customerId`, `accountId`, and `balance` to reduce sensitive data exposure.
+- **Configurable logging strategy**: logging can switch between DB and filesystem through configuration without changing controller/service code.
+- **Circuit breaker override**: when the Resilience4j circuit breaker is `OPEN`, all APIs force filesystem audit logging to avoid depending on DB logging during third-party instability.
+- **Resilience4j circuit breaker**: protects the third-party loan call from repeated failures and exposes state through internal endpoints.
+- **Retry with exponential backoff**: retries only transient network failures before the circuit breaker records the final failure.
+- **Redis caching**: loan third-party responses are cached with TTL to reduce latency and dependency pressure.
+- **Redis-backed account reads**: account details come from Redis to match the required account API flow.
+- **Bulkhead pools**: loan, account, and internal work use separate bounded executor pools to reduce cross-endpoint interference.
+- **Internal endpoint protection**: `/logs/db` and manual circuit breaker reset require `X-Internal-Key`.
+- **Bounded audit DB log storage**: in-memory DB logs use a bounded ring buffer to avoid unbounded memory growth.
+- **Thread-safe filesystem logging**: file audit writes are serialized to prevent interleaved log lines.
+- **Health and observability**: `/health`, `/actuator/health`, structured logs, and circuit breaker status endpoints support operations and debugging.
+- **Dockerized runtime**: Docker Compose starts both the API and Redis for repeatable local and reviewer testing.
+
+## Stop The Application
+
+```bash
+docker compose down
+```
+
+Use this if port `8080` is already occupied:
+
+```bash
+lsof -nP -iTCP:8080 -sTCP:LISTEN
+```
+
+Stop the listed process only if it is an old local run of this same app.
