@@ -51,7 +51,7 @@ AuditLoggingService
   +-- LoggingStrategyResolver
         |
         +-- if circuit breaker OPEN: force filesystem logging
-        +-- otherwise: app.logging.default-strategy
+        +-- otherwise: per-API logging.strategy.* config
               |
               +-- DatabaseLogStrategy
               +-- FileSystemLogStrategy
@@ -167,7 +167,8 @@ Expected response includes:
 Use this to add more account data, then fetch it through `GET /account-details`.
 
 ```bash
-curl -X POST "http://127.0.0.1:8080/account-details" \
+curl -i -X POST "http://127.0.0.1:8080/account-details" \
+  -H "X-Request-Id: write-account-A2001" \
   -H "Content-Type: application/json" \
   -d '{
     "accountId": "A2001",
@@ -176,6 +177,12 @@ curl -X POST "http://127.0.0.1:8080/account-details" \
     "currency": "INR",
     "status": "ACTIVE"
   }'
+```
+
+The response header tells you where this request was audited:
+
+```text
+X-Audit-Log-Strategy: db
 ```
 
 Fetch the new account:
@@ -190,7 +197,8 @@ curl -H "X-Request-Id: e2e-account-new" \
 Use this to add more third-party loan-provider data. The `/loan` API calls the mock provider, and the mock provider first checks Redis key `third-party:loan:{customerId}`.
 
 ```bash
-curl -X POST "http://127.0.0.1:8080/third-party/loan-data" \
+curl -i -X POST "http://127.0.0.1:8080/third-party/loan-data" \
+  -H "X-Request-Id: write-loan-C9001" \
   -H "Content-Type: application/json" \
   -d '{
     "customerId": "C9001",
@@ -201,6 +209,12 @@ curl -X POST "http://127.0.0.1:8080/third-party/loan-data" \
     "tenureMonths": 84,
     "currency": "INR"
   }'
+```
+
+The response header tells you where this request was audited:
+
+```text
+X-Audit-Log-Strategy: file
 ```
 
 Fetch the newly added mock provider data through the real loan API:
@@ -282,6 +296,13 @@ curl -H "X-Internal-Key: dev-internal-key" \
   "http://127.0.0.1:8080/logs/db"
 ```
 
+To confirm a write request was logged in DB, search the response for the request ID you sent:
+
+```text
+"requestId":"write-account-A2001"
+"loggingStrategy":"db"
+```
+
 ### 8. Filesystem Audit Logs
 
 Filesystem logs are mounted from the container to the local `logs/` directory.
@@ -360,6 +381,8 @@ Look for:
 "requestId":"cb-open-account-1"
 "loggingStrategy":"file"
 ```
+
+Every audited API response also includes `X-Audit-Log-Strategy`, so `curl -i` shows the actual destination immediately.
 
 Reset the circuit breaker back to `CLOSED`:
 
@@ -443,12 +466,13 @@ tail -n 20 logs/api-requests-2026-05-28.log
 
 ## Configuration
 
-Configuration is read from `application.properties`. Docker Compose sets environment variables using the `APP_` prefix.
+Configuration is read from `application.properties`. Docker Compose sets environment variables for the container.
 
 Important properties:
 
 ```text
-app.logging.default-strategy=db
+logging.strategy.loan=file
+logging.strategy.account-details=db
 app.logging.file-directory=logs
 app.logging.db.max-entries=10000
 app.internal.api-key=dev-internal-key
@@ -465,9 +489,14 @@ Docker examples:
 ```text
 APP_REDIS_HOST=redis
 APP_INTERNAL_API_KEY=dev-internal-key
-APP_LOGGING_DEFAULT_STRATEGY=db
 APP_LOGGING_FILE_DIRECTORY=/app/logs
+LOGGING_STRATEGY_LOAN=file
+LOGGING_STRATEGY_ACCOUNT_DETAILS=db
 ```
+
+`logging.strategy.loan` controls `GET /loan` and `POST /third-party/loan-data` audit logs.
+`logging.strategy.account-details` controls `GET /account-details` and `POST /account-details` audit logs.
+When the Resilience4j circuit breaker is `OPEN`, the resolver overrides both settings and writes every API audit log to filesystem.
 
 ## Non-Functional Requirements Implemented
 

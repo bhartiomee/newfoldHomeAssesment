@@ -1,6 +1,6 @@
 package com.example.loanaccount.api;
 
-import com.example.loanaccount.config.AppProperties;
+import com.example.loanaccount.config.LoggingStrategyProperties;
 import com.example.loanaccount.logging.AuditLoggingService;
 import com.example.loanaccount.model.AccountUpsertRequest;
 import com.example.loanaccount.model.ApiResponse;
@@ -26,18 +26,18 @@ import java.util.concurrent.ExecutorService;
 public class AccountDetailsController {
     private final AccountDetailsService accountDetailsService;
     private final AuditLoggingService auditLoggingService;
-    private final AppProperties properties;
+    private final LoggingStrategyProperties loggingStrategyProperties;
     private final ExecutorService accountExecutor;
 
     public AccountDetailsController(
             AccountDetailsService accountDetailsService,
             AuditLoggingService auditLoggingService,
-            AppProperties properties,
+            LoggingStrategyProperties loggingStrategyProperties,
             @Qualifier("accountExecutor") ExecutorService accountExecutor
     ) {
         this.accountDetailsService = accountDetailsService;
         this.auditLoggingService = auditLoggingService;
-        this.properties = properties;
+        this.loggingStrategyProperties = loggingStrategyProperties;
         this.accountExecutor = accountExecutor;
     }
 
@@ -66,29 +66,55 @@ public class AccountDetailsController {
             responseBody = "{\"error\":\"" + HttpExchangeUtils.escapeJson(exception.getMessage()) + "\"}";
         }
 
-        auditLoggingService.log(
-                properties.logging().defaultStrategy(),
+        String auditStrategy = auditLoggingService.log(
+                loggingStrategyProperties.accountDetails(),
                 "account-details",
                 request,
                 new ApiResponse(statusCode, responseBody)
         );
-        return ResponseEntity.status(statusCode).contentType(MediaType.APPLICATION_JSON).body(responseBody);
+        return ResponseEntity.status(statusCode)
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Audit-Log-Strategy", auditStrategy)
+                .body(responseBody);
     }
 
     @PostMapping(value = "/account-details", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
-    public CompletableFuture<ResponseEntity<String>> upsertAccount(@RequestBody AccountUpsertRequest body) {
-        return CompletableFuture.supplyAsync(() -> {
-            if (!ValidationUtils.isValidBankingId(body.accountId())) {
-                return ResponseEntity.badRequest()
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .body("{\"error\":\"Invalid accountId format\"}");
-            }
+    public CompletableFuture<ResponseEntity<String>> upsertAccount(
+            @RequestBody AccountUpsertRequest body,
+            HttpServletRequest servletRequest
+    ) {
+        RequestSnapshot request = ServletRequestUtils.snapshot(servletRequest);
+        return CompletableFuture.supplyAsync(() -> handleAccountUpsert(body, request), accountExecutor);
+    }
 
-            String accountJson = body.toAccountJson();
-            accountDetailsService.saveAccountDetails(body.accountId(), accountJson);
-            String response = "{\"message\":\"Account data saved in Redis\",\"redisKey\":\"account:"
-                    + HttpExchangeUtils.escapeJson(body.accountId()) + "\",\"account\":" + accountJson + "}";
-            return ResponseEntity.status(201).contentType(MediaType.APPLICATION_JSON).body(response);
-        }, accountExecutor);
+    private ResponseEntity<String> handleAccountUpsert(AccountUpsertRequest body, RequestSnapshot request) {
+        int statusCode = 201;
+        String responseBody;
+
+        try {
+            if (body == null || !ValidationUtils.isValidBankingId(body.accountId())) {
+                statusCode = 400;
+                responseBody = "{\"error\":\"Invalid accountId format\"}";
+            } else {
+                String accountJson = body.toAccountJson();
+                accountDetailsService.saveAccountDetails(body.accountId(), accountJson);
+                responseBody = "{\"message\":\"Account data saved in Redis\",\"redisKey\":\"account:"
+                        + HttpExchangeUtils.escapeJson(body.accountId()) + "\",\"account\":" + accountJson + "}";
+            }
+        } catch (Exception exception) {
+            statusCode = 500;
+            responseBody = "{\"error\":\"" + HttpExchangeUtils.escapeJson(exception.getMessage()) + "\"}";
+        }
+
+        String auditStrategy = auditLoggingService.log(
+                loggingStrategyProperties.accountDetails(),
+                "account-details",
+                request,
+                new ApiResponse(statusCode, responseBody)
+        );
+        return ResponseEntity.status(statusCode)
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Audit-Log-Strategy", auditStrategy)
+                .body(responseBody);
     }
 }

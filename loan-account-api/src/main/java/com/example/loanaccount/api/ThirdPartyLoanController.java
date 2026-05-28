@@ -1,9 +1,15 @@
 package com.example.loanaccount.api;
 
+import com.example.loanaccount.config.LoggingStrategyProperties;
+import com.example.loanaccount.logging.AuditLoggingService;
+import com.example.loanaccount.model.ApiResponse;
 import com.example.loanaccount.model.LoanProviderDataRequest;
+import com.example.loanaccount.model.RequestSnapshot;
 import com.example.loanaccount.service.RedisClient;
 import com.example.loanaccount.util.HttpExchangeUtils;
+import com.example.loanaccount.util.ServletRequestUtils;
 import com.example.loanaccount.util.ValidationUtils;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -15,9 +21,17 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 public class ThirdPartyLoanController {
     private final RedisClient redisClient;
+    private final AuditLoggingService auditLoggingService;
+    private final LoggingStrategyProperties loggingStrategyProperties;
 
-    public ThirdPartyLoanController(RedisClient redisClient) {
+    public ThirdPartyLoanController(
+            RedisClient redisClient,
+            AuditLoggingService auditLoggingService,
+            LoggingStrategyProperties loggingStrategyProperties
+    ) {
         this.redisClient = redisClient;
+        this.auditLoggingService = auditLoggingService;
+        this.loggingStrategyProperties = loggingStrategyProperties;
     }
 
     @GetMapping(value = "/third-party/loan", produces = MediaType.APPLICATION_JSON_VALUE)
@@ -31,19 +45,40 @@ public class ThirdPartyLoanController {
     }
 
     @PostMapping(value = "/third-party/loan-data", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<String> upsertLoanData(@RequestBody LoanProviderDataRequest body) {
-        if (!ValidationUtils.isValidBankingId(body.customerId())) {
-            return ResponseEntity.badRequest()
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body("{\"error\":\"Invalid customerId format\"}");
+    public ResponseEntity<String> upsertLoanData(
+            @RequestBody LoanProviderDataRequest body,
+            HttpServletRequest servletRequest
+    ) {
+        RequestSnapshot request = ServletRequestUtils.snapshot(servletRequest);
+        int statusCode = 201;
+        String responseBody;
+
+        try {
+            if (body == null || !ValidationUtils.isValidBankingId(body.customerId())) {
+                statusCode = 400;
+                responseBody = "{\"error\":\"Invalid customerId format\"}";
+            } else {
+                String redisKey = redisLoanKey(body.customerId());
+                String loanJson = body.toLoanJson();
+                redisClient.set(redisKey, loanJson);
+                responseBody = "{\"message\":\"Third-party loan data saved in Redis\",\"redisKey\":\""
+                        + redisKey + "\",\"loan\":" + loanJson + "}";
+            }
+        } catch (Exception exception) {
+            statusCode = 500;
+            responseBody = "{\"error\":\"" + HttpExchangeUtils.escapeJson(exception.getMessage()) + "\"}";
         }
 
-        String redisKey = redisLoanKey(body.customerId());
-        String loanJson = body.toLoanJson();
-        redisClient.set(redisKey, loanJson);
-        String response = "{\"message\":\"Third-party loan data saved in Redis\",\"redisKey\":\""
-                + redisKey + "\",\"loan\":" + loanJson + "}";
-        return ResponseEntity.status(201).contentType(MediaType.APPLICATION_JSON).body(response);
+        String auditStrategy = auditLoggingService.log(
+                loggingStrategyProperties.loan(),
+                "third-party-loan-data",
+                request,
+                new ApiResponse(statusCode, responseBody)
+        );
+        return ResponseEntity.status(statusCode)
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Audit-Log-Strategy", auditStrategy)
+                .body(responseBody);
     }
 
     private String redisLoanKey(String customerId) {

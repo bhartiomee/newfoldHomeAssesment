@@ -15,7 +15,7 @@ public class AuditLoggingService {
         this.clock = clock;
     }
 
-    public void log(String strategyName, String apiName, RequestSnapshot request, ApiResponse response) {
+    public String log(String strategyName, String apiName, RequestSnapshot request, ApiResponse response) {
         try {
             LogStrategy strategy = strategyResolver.resolve(strategyName);
             AuditLogEntry entry = new AuditLogEntry(
@@ -28,12 +28,14 @@ public class AuditLoggingService {
                     Instant.now(clock)
             );
             strategy.log(entry);
+            return strategy.name();
         } catch (Exception exception) {
             StructuredLogger.error("audit_logging_failed", java.util.Map.of(
                     "requestId", request.requestId(),
                     "strategy", strategyName,
                     "error", exception.getMessage()
             ));
+            return "failed";
         }
     }
 }

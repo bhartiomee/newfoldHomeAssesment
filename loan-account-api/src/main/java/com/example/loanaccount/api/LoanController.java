@@ -1,6 +1,6 @@
 package com.example.loanaccount.api;
 
-import com.example.loanaccount.config.AppProperties;
+import com.example.loanaccount.config.LoggingStrategyProperties;
 import com.example.loanaccount.logging.AuditLoggingService;
 import com.example.loanaccount.logging.StructuredLogger;
 import com.example.loanaccount.model.ApiResponse;
@@ -27,18 +27,18 @@ import java.util.concurrent.ExecutorService;
 public class LoanController {
     private final LoanService loanService;
     private final AuditLoggingService auditLoggingService;
-    private final AppProperties properties;
+    private final LoggingStrategyProperties loggingStrategyProperties;
     private final ExecutorService loanExecutor;
 
     public LoanController(
             LoanService loanService,
             AuditLoggingService auditLoggingService,
-            AppProperties properties,
+            LoggingStrategyProperties loggingStrategyProperties,
             @Qualifier("loanExecutor") ExecutorService loanExecutor
     ) {
         this.loanService = loanService;
         this.auditLoggingService = auditLoggingService;
-        this.properties = properties;
+        this.loggingStrategyProperties = loggingStrategyProperties;
         this.loanExecutor = loanExecutor;
     }
 
@@ -82,12 +82,15 @@ public class LoanController {
             responseBody = "{\"error\":\"" + HttpExchangeUtils.escapeJson(exception.getMessage()) + "\"}";
         }
 
-        auditLoggingService.log(
-                properties.logging().defaultStrategy(),
+        String auditStrategy = auditLoggingService.log(
+                loggingStrategyProperties.loan(),
                 "loan",
                 request,
                 new ApiResponse(statusCode, responseBody, retryCount, cacheHit)
         );
-        return ResponseEntity.status(statusCode).contentType(MediaType.APPLICATION_JSON).body(responseBody);
+        return ResponseEntity.status(statusCode)
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Audit-Log-Strategy", auditStrategy)
+                .body(responseBody);
     }
 }

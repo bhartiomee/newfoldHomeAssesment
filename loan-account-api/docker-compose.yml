@@ -19,6 +19,8 @@ services:
       APP_INTERNAL_API_KEY: dev-internal-key
       APP_LOGGING_DEFAULT_STRATEGY: db
       APP_LOGGING_FILE_DIRECTORY: /app/logs
+      LOGGING_STRATEGY_LOAN: file
+      LOGGING_STRATEGY_ACCOUNT_DETAILS: db
     volumes:
       - ./logs:/app/logs
 
